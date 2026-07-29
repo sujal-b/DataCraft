@@ -38,4 +38,3 @@ DataCraft Studio uses a modern, full-stack architecture with a clear separation 
 While the current application is a robust platform, future development could focus on:
 * **Backend-Driven Undo/Redo**: Implementing a professional, file-based versioning system to provide a truly non-destructive workflow.
 * **Feature-Engineering**: Performing smart feature engineering with Single-Click, completely Based on Context & Columns provided.
-* **Expanded Data Connectors**: Adding support for connecting directly to databases (like PostgreSQL) and data warehouses (like Snowflake).
