@@ -30,7 +30,7 @@ const CustomHeader = props => {
     );
 };
 
-const DataTable = ({ rowData, columnDefs, theme, onRunTask, onRefresh }) => {
+const DataTable = ({ rowData, columnDefs, theme, onRunTask }) => {
     const gridRef = useRef(null);
 
     const onSearch = (event) => {
@@ -81,14 +81,19 @@ const DataTable = ({ rowData, columnDefs, theme, onRunTask, onRefresh }) => {
 
         menuItems.push('separator', 'copy', 'paste', 'export');
         return menuItems;
-    }, [onRunTask, onRefresh]);
+    }, [onRunTask]);
 
     const defaultColDef = useMemo(() => ({
         resizable: true,
         headerComponent: CustomHeader,
-        menuTabs: ['generalMenuTab', 'filterMenuTab', 'columnsMenuTab'],
+        menuTabs: ['filterMenuTab', 'generalMenuTab'],
         minWidth: 120,
         flex: 1,
+    }), []);
+
+    const rowSelectionMode = useMemo(() => ({
+        mode: 'multiRow',
+        enableClickSelection: false
     }), []);
 
     return (
@@ -113,12 +118,8 @@ const DataTable = ({ rowData, columnDefs, theme, onRunTask, onRefresh }) => {
                     paginationPageSize={50}
                     headerHeight={56}
                     paginationPageSizeSelector={[50,100,150,200]}
-                    sideBar={true}
                     getContextMenuItems={getContextMenuItems}
-                    
-                    rowDragManaged={true}
-                    rowSelection={'multiple'}
-                    suppressRowClickSelection={true}
+                    rowSelection={rowSelectionMode}
                 />
             </div>
         </div>

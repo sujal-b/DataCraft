@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import DataTable from '../components/DataTable';
 import Papa from 'papaparse';
-import { useDatasets } from '../context/DatasetContext';
+import { useDatasets } from '../context/useDatasets';
 import { toast } from 'react-toastify';
 import { FaFileCsv, FaChartBar } from "react-icons/fa";
-import { FiChevronDown, FiUpload, FiTool, FiCpu } from "react-icons/fi";
+import { FiChevronDown, FiUpload, FiTool, FiCpu, FiFileText } from "react-icons/fi";
 import InsightsSidebar from '../components/InsightsSidebar';
 import StatisticsSidebar from '../components/StatisticsSidebar';
+import PostCommitScreen from '../components/PostCommitScreen';
 import '../styles/DataTablePage.css';
 
 const ThemeSelector = ({ theme, setTheme }) => (
@@ -81,16 +82,38 @@ const DataTablePage = () => {
     const [arePlansLoading, setArePlansLoading] = useState(false);
     const plansPollingRef = useRef(null);
 
-    const [simulationResults, setSimulationResults] = useState(null);
+    // --- Phase 5: Parallel simulation state
+    const [parallelSimResults, setParallelSimResults] = useState(null);  // live streaming results
     const [isSimulating, setIsSimulating] = useState(false);
-    const simulationPollingRef = useRef(null);
-    const [simulationWarnings, setSimulationWarnings] = useState([]);
+    const parallelSimPollingRef = useRef(null);
+
+    // Legacy simulation state (kept for backwards compat)
+    const [simulationResults, setSimulationResults] = useState(null);
 
     const [isApplyingPlan, setIsApplyingPlan] = useState(false);
+    const [recipeAvailable, setRecipeAvailable] = useState(false);
+
+    // --- Post-commit screen state
+    const [lastCommitData, setLastCommitData] = useState(null);     // persists for 'Last Report' button
+    const [showPostCommitScreen, setShowPostCommitScreen] = useState(false); // overlay visibility
+    const afterProfilePollRef = useRef(null);
+    const applyPlanPollRef = useRef(null);
     
     const loadData = useCallback(async () => {
         if (!currentDataset) return;
         try {
+            const sizeBytes = currentDataset.size_bytes || 0;
+            const sizeMb = sizeBytes / (1024 * 1024);
+            if (sizeMb > 8) {
+                const response = await fetch(`/api/dataset/${currentDataset.name}/rows?offset=0&limit=500`);
+                if (!response.ok) throw new Error('Failed to fetch dataset rows');
+                const data = await response.json();
+                setRowData(data.rows || []);
+                setError('');
+                toast.info(`Loaded first ${data.rows?.length || 0} rows of large file (${sizeMb.toFixed(1)} MB).`);
+                return;
+            }
+
             const urlToFetch = `${currentDataset.path}?t=${Date.now()}`;
             const response = await fetch(urlToFetch);
             if (!response.ok) throw new Error('Failed to fetch dataset');
@@ -331,71 +354,7 @@ const DataTablePage = () => {
         }
     }, [currentDataset, loadData]);
 
-    const handleApplyPlan = useCallback(async (plan) => {
-        if (!currentDataset) return;
-        
-        if (!window.confirm(`Are you sure you want to apply "${plan.name}"? This will permanently modify the dataset.`)) {
-            return;
-        }
 
-        setIsApplyingPlan(true);
-        const toastId = toast.loading("Applying plan strategies to dataset...");
-
-        try {
-            // This matches the endpoint we added to main.py
-            const response = await fetch(`/api/dataset/${currentDataset.name}/apply-plan`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    python_code: plan.python_code, // The hidden field we added to the AI JSON
-                    plan_name: plan.name
-                }),
-            });
-
-            if (!response.ok) {
-                const err = await response.json();
-                throw new Error(err.detail || "Failed to apply plan.");
-            }
-
-            const result = await response.json();
-            
-            // Wait for the background task if it's async, or if it returns immediately:
-            // (Our backend endpoint returns a job_id, so we technically should poll, 
-            // but for simplicity, let's assume the user waits or we do a quick timeout 
-            // since the endpoint you added earlier returns a job_id).
-            
-            // IF YOUR ENDPOINT RETURNS A JOB_ID (Async way):
-            // We should poll similar to generate-plans. 
-            // Let's do a quick polling implementation here for robustness.
-            
-            const jobId = result.job_id;
-            const pollInterval = setInterval(async () => {
-                const statusRes = await fetch(`/api/analyze/status/${jobId}`);
-                const statusData = await statusRes.json();
-                
-                if (statusData.status !== 'PENDING') {
-                    clearInterval(pollInterval);
-                    setIsApplyingPlan(false);
-                    
-                    if (statusData.status === 'SUCCESS') {
-                         toast.update(toastId, { render: "Plan applied successfully! Reloading data...", type: 'success', isLoading: false, autoClose: 3000 });
-                         
-                         // Refresh everything
-                         handleActionComplete(); 
-                         // Reset simulation state so user goes back to start or sees updated stats
-                         setTreatmentPlans(null); 
-                         setSimulationResults(null);
-                    } else {
-                        toast.update(toastId, { render: `Application failed: ${statusData.error}`, type: 'error', isLoading: false, autoClose: 5000 });
-                    }
-                }
-            }, 2000);
-
-        } catch (error) {
-            setIsApplyingPlan(false);
-            toast.update(toastId, { render: error.message, type: 'error', isLoading: false, autoClose: 5000 });
-        }
-    }, [currentDataset, handleActionComplete]);
 
     const handleQuickAction = useCallback(async (actionType) => {
         if (!currentDataset) {
@@ -424,7 +383,7 @@ const DataTablePage = () => {
                 throw new Error(errData.detail || "Failed to start cleaning job.");
             }
 
-            const result = await response.json();
+            await response.json();
             
             setTimeout(() => {
                 toast.update(toastId, { render: "Cleaning successful! Table has been refreshed.", type: "success", isLoading: false, autoClose: 5000 });
@@ -436,53 +395,310 @@ const DataTablePage = () => {
         }
     }, [currentDataset, handleActionComplete]);
 
-    const handleRunSimulation = useCallback(async () => {
-        if (!currentDataset || !treatmentPlans) return;
+    // =========================================================================
+    // PHASE 5.1: PARALLEL SIMULATION — dispatches 3 Celery subtasks at once
+    // =========================================================================
+    const handleRunParallelSimulation = useCallback(async () => {
+        if (!currentDataset || !treatmentPlans?.actions?.length) {
+            toast.warn("Generate a treatment plan first before running simulation.");
+            return;
+        }
+        if (!targetVariable) {
+            toast.warn("Select a target variable before running simulation.");
+            return;
+        }
 
-        if (simulationPollingRef.current) clearInterval(simulationPollingRef.current);
+        if (parallelSimPollingRef.current) clearInterval(parallelSimPollingRef.current);
         setIsSimulating(true);
+        setParallelSimResults(null);
         setSimulationResults(null);
-        const toastId = toast.loading("Starting impact simulation... This may take a few minutes.");
+        setRecipeAvailable(false);
+
+        const mlGoal = goal === 'stable_forecasting' ? 'regression' : 'classification';
+        const toastId = toast.loading("Dispatching parallel simulation workers...");
 
         try {
-            const response = await fetch(`/api/dataset/${currentDataset.name}/run-simulation`, {
+            const response = await fetch(`/api/dataset/${currentDataset.name}/run-parallel-simulation`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    plans: treatmentPlans,
+                    action_backlog: treatmentPlans.actions,
                     target_variable: targetVariable,
-                    goal: goal === 'stable_forecasting' ? 'regression' : 'classification', // Example mapping
+                    goal: mlGoal,
                 }),
             });
-            if (!response.ok) throw new Error((await response.json()).detail || 'Failed to start simulation.');
+
+            if (!response.ok) {
+                const err = await response.json();
+                throw new Error(err.detail || 'Failed to start parallel simulation.');
+            }
 
             const { job_id } = await response.json();
-            toast.update(toastId, { render: "Simulation running. Validating plans against probe models...", isLoading: true });
+            toast.update(toastId, {
+                render: "Workers dispatched! Streaming results as each scenario completes...",
+                isLoading: true
+            });
 
-            simulationPollingRef.current = setInterval(async () => {
-                const statusResponse = await fetch(`/api/analyze/status/${job_id}`);
-                const data = await statusResponse.json();
+            parallelSimPollingRef.current = setInterval(async () => {
+                try {
+                    const statusResponse = await fetch(`/simulation-status/${job_id}`);
+                    if (!statusResponse.ok) return;  // Network hiccup — retry next tick
+                    const data = await statusResponse.json();
 
-                if (data.status !== 'PENDING') {
-                    clearInterval(simulationPollingRef.current);
-                    setIsSimulating(false); // <--- THIS MUST BE HERE TO STOP SPINNER
-                    
-                    if (data.status === 'SUCCESS') {
-                        setSimulationResults(data.result);
-                        setSimulationWarnings(data.warnings || []);
-                        toast.update(toastId, { render: "Simulation complete!", type: 'success', isLoading: false, autoClose: 5000 });
-                    } else {
-                        // It failed
-                        toast.update(toastId, { render: `Simulation failed: ${data.error}`, type: 'error', isLoading: false, autoClose: 7000 });
+                    // Update state on every poll (enables live streaming UI)
+                    setParallelSimResults(data);
+
+                    if (data.status === 'COMPLETE' || data.status === 'FAILURE') {
+                        clearInterval(parallelSimPollingRef.current);
+                        setIsSimulating(false);
+
+                        if (data.status === 'COMPLETE') {
+                            const successCount = data.plans?.filter(p => p.task_state === 'SUCCESS').length || 0;
+                            toast.update(toastId, {
+                                render: `${successCount}/3 simulations complete!`,
+                                type: 'success', isLoading: false, autoClose: 5000
+                            });
+                        } else {
+                            toast.update(toastId, {
+                                render: `Simulation failed: ${data.error || 'Unknown error'}`,
+                                type: 'error', isLoading: false, autoClose: 7000
+                            });
+                        }
                     }
+                } catch (pollErr) {
+                    console.warn('Simulation poll error (retrying):', pollErr);
                 }
-            }, 5000);
+            }, 3000);
 
         } catch (error) {
             setIsSimulating(false);
-            toast.update(toastId, { render: error.message, type: "error", isLoading: false, autoClose: 7000 });
+            toast.update(toastId, { render: error.message, type: 'error', isLoading: false, autoClose: 7000 });
         }
     }, [currentDataset, treatmentPlans, targetVariable, goal]);
+
+    // =========================================================================
+    // PHASE 5.1: APPLY A SIMULATED SCENARIO (risk-level–derived action subset)
+    // =========================================================================
+    const handleApplySimulatedPlan = useCallback(async (scenarioName, mlImprovementScore) => {
+        if (!currentDataset || !treatmentPlans?.actions) return;
+
+        // Derive the action subset for this scenario (mirrors backend derivation)
+        let actionsToApply;
+        if (scenarioName === 'conservative') {
+            actionsToApply = treatmentPlans.actions.filter(a => a.risk_level === 'LOW');
+        } else if (scenarioName === 'balanced') {
+            actionsToApply = treatmentPlans.actions.filter(a => ['LOW', 'MEDIUM'].includes(a.risk_level));
+        } else {
+            actionsToApply = treatmentPlans.actions;  // aggressive: all
+        }
+
+        if (!actionsToApply.length) {
+            toast.warn(`No actions available for the "${scenarioName}" scenario.`);
+            return;
+        }
+
+        if (!window.confirm(
+            `Apply ${actionsToApply.length} "${scenarioName}" actions?\n\nThis will permanently modify the dataset file.`
+        )) return;
+
+        setIsApplyingPlan(true);
+        const toastId = toast.loading(`Applying ${scenarioName} plan (${actionsToApply.length} actions)...`);
+
+        try {
+            const response = await fetch(`/api/dataset/${currentDataset.name}/apply-plan`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    action_backlog:       actionsToApply,
+                    plan_name:            `${scenarioName} plan`,
+                    ml_improvement_score: mlImprovementScore ?? null,
+                    target_variable:      targetVariable || null,
+                }),
+            });
+
+            if (!response.ok) {
+                const err = await response.json();
+                throw new Error(err.detail || 'Failed to apply plan.');
+            }
+
+            const { job_id } = await response.json();
+            let attempts = 0;
+            if (applyPlanPollRef.current) clearInterval(applyPlanPollRef.current);
+            applyPlanPollRef.current = setInterval(async () => {
+                attempts += 1;
+                if (attempts > 60) {
+                    clearInterval(applyPlanPollRef.current);
+                    setIsApplyingPlan(false);
+                    toast.update(toastId, { render: "Plan application timed out.", type: "error", isLoading: false, autoClose: 5000 });
+                    return;
+                }
+                const statusRes  = await fetch(`/api/analyze/status/${job_id}`);
+                const statusData = await statusRes.json();
+
+                if (statusData.status !== 'PENDING') {
+                    clearInterval(applyPlanPollRef.current);
+                    setIsApplyingPlan(false);
+
+                    if (statusData.status === 'SUCCESS') {
+                        toast.update(toastId, {
+                            render: `${scenarioName} plan applied! Dataset updated.`,
+                            type: 'success', isLoading: false, autoClose: 4000
+                        });
+                        setRecipeAvailable(true);
+                        handleActionComplete();
+                        setTreatmentPlans(null);
+                        setParallelSimResults(null);
+                        setSimulationResults(null);
+                    } else {
+                        toast.update(toastId, {
+                            render: `Application failed: ${statusData.error}`,
+                            type: 'error', isLoading: false, autoClose: 6000
+                        });
+                    }
+                }
+            }, 2000);
+
+        } catch (error) {
+            setIsApplyingPlan(false);
+            toast.update(toastId, { render: error.message, type: 'error', isLoading: false, autoClose: 5000 });
+        }
+    }, [currentDataset, treatmentPlans, targetVariable, handleActionComplete]);
+
+    // LEGACY handleApplyPlan (for ActionBacklogPanel direct apply)
+    const handleApplyPlan = useCallback(async (selectedActions) => {
+        if (!currentDataset) return;
+        if (!window.confirm(`Apply ${selectedActions.length} selected actions? This will permanently modify the dataset.`)) return;
+
+        // Snapshot before-profile from already-loaded state — no extra fetch needed
+        const beforeProfile = datasetMetrics ? { ...datasetMetrics } : null;
+
+        setIsApplyingPlan(true);
+        const toastId = toast.loading("Applying selected actions to dataset...");
+
+        try {
+            const response = await fetch(`/api/dataset/${currentDataset.name}/apply-plan`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    action_backlog:  selectedActions,
+                    plan_name:       'Manual Selection',
+                    target_variable: targetVariable || null,
+                }),
+            });
+
+            if (!response.ok) {
+                const err = await response.json();
+                throw new Error(err.detail || 'Failed to apply plan.');
+            }
+
+            const { job_id } = await response.json();
+            let attempts = 0;
+            if (applyPlanPollRef.current) clearInterval(applyPlanPollRef.current);
+            applyPlanPollRef.current = setInterval(async () => {
+                attempts += 1;
+                if (attempts > 60) {
+                    clearInterval(applyPlanPollRef.current);
+                    setIsApplyingPlan(false);
+                    toast.update(toastId, { render: "Plan application timed out.", type: "error", isLoading: false, autoClose: 5000 });
+                    return;
+                }
+                const statusRes  = await fetch(`/api/analyze/status/${job_id}`);
+                const statusData = await statusRes.json();
+
+                if (statusData.status !== 'PENDING') {
+                    clearInterval(applyPlanPollRef.current);
+                    setIsApplyingPlan(false);
+
+                    if (statusData.status === 'SUCCESS') {
+                        toast.update(toastId, { render: 'Plan applied!', type: 'success', isLoading: false, autoClose: 3000 });
+                        setRecipeAvailable(true);
+                        setTreatmentPlans(null);
+                        setParallelSimResults(null);
+                        setSimulationResults(null);
+                        loadData();
+                        // Store commit result and show post-commit screen
+                        const commitSnapshot = { commitResult: statusData, beforeProfile, afterProfile: null };
+                        setLastCommitData(commitSnapshot);
+                        setShowPostCommitScreen(true);
+                        // Poll for fresh after-profile (full datasetMetrics shape)
+                        if (afterProfilePollRef.current) clearInterval(afterProfilePollRef.current);
+                        let profileAttempts = 0;
+                        afterProfilePollRef.current = setInterval(async () => {
+                            profileAttempts += 1;
+                            if (profileAttempts > 45) {
+                                clearInterval(afterProfilePollRef.current);
+                                return;
+                            }
+                            try {
+                                const ar = await fetch(`/api/dataset/${currentDataset.name}/statistics`);
+                                if (ar.ok) {
+                                    const ad = await ar.json();
+                                    if (ad.qualityScore != null) {
+                                        clearInterval(afterProfilePollRef.current);
+                                        // Store the full metrics object — PostCommitScreen reads columnStats, qualityScore, rowCount
+                                        setLastCommitData(prev => prev ? { ...prev, afterProfile: ad } : null);
+                                    }
+                                }
+                            } catch {
+                                // Ignore network errors during polling
+                            }
+                        }, 4000);
+                    } else {
+                        toast.update(toastId, { render: `Failed: ${statusData.error}`, type: 'error', isLoading: false, autoClose: 5000 });
+                    }
+                }
+            }, 2000);
+
+        } catch (error) {
+            setIsApplyingPlan(false);
+            toast.update(toastId, { render: error.message, type: 'error', isLoading: false, autoClose: 5000 });
+        }
+    }, [currentDataset, loadData, targetVariable, datasetMetrics]);
+
+    // =========================================================================
+    // PHASE 5.3: DOWNLOAD CLEANING RECIPE
+    // =========================================================================
+    const handleDownloadRecipe = useCallback(async () => {
+        if (!currentDataset) return;
+        const toastId = toast.loading('Fetching cleaning recipe...');
+        try {
+            const response = await fetch(`/api/dataset/${currentDataset.name}/download-recipe`);
+            if (!response.ok) {
+                const err = await response.json();
+                throw new Error(err.detail || 'Recipe not available. Apply a plan first.');
+            }
+            const recipe = await response.json();
+            const blob   = new Blob([JSON.stringify(recipe, null, 2)], { type: 'application/json' });
+            const url    = URL.createObjectURL(blob);
+            const a      = document.createElement('a');
+            a.href     = url;
+            a.download = `${currentDataset.name.replace('.csv', '')}_cleaning_recipe.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+            toast.update(toastId, { render: 'Cleaning recipe downloaded!', type: 'success', isLoading: false, autoClose: 3000 });
+        } catch (err) {
+            toast.update(toastId, { render: err.message, type: 'error', isLoading: false, autoClose: 5000 });
+        }
+    }, [currentDataset]);
+
+    const handleExport = useCallback(async (format = 'csv') => {
+        if (!currentDataset) return;
+        const toastId = toast.loading(`Preparing ${format.toUpperCase()} download…`);
+        try {
+            const res = await fetch(`/api/dataset/${currentDataset.name}/export?format=${format}`);
+            if (!res.ok) throw new Error((await res.json()).detail || 'Export failed.');
+            const blob = await res.blob();
+            const url  = URL.createObjectURL(blob);
+            const a    = document.createElement('a');
+            a.href     = url;
+            a.download = currentDataset.name.replace('.csv', `.${format === 'xlsx' ? 'xlsx' : 'csv'}`);
+            a.click();
+            URL.revokeObjectURL(url);
+            toast.update(toastId, { render: `Downloaded as ${format.toUpperCase()}!`, type: 'success', isLoading: false, autoClose: 3000 });
+        } catch (e) {
+            toast.update(toastId, { render: e.message, type: 'error', isLoading: false, autoClose: 5000 });
+        }
+    }, [currentDataset]);
 
     const columnDefs = useMemo(() => {
         if (!datasetMetrics?.columnStats) return [];
@@ -501,8 +717,20 @@ const DataTablePage = () => {
             fetchMetrics();
         }
         return () => {
-            if (metricsPollingRef.current) clearInterval(metricsPollingRef.current);
-            if (insightsPollingRef.current) clearInterval(insightsPollingRef.current);
+            [
+                metricsPollingRef,
+                diagnosticPollingRef,
+                insightsPollingRef,
+                plansPollingRef,
+                parallelSimPollingRef,
+                afterProfilePollRef,
+                applyPlanPollRef,
+            ].forEach(ref => {
+                if (ref && ref.current) {
+                    clearInterval(ref.current);
+                    ref.current = null;
+                }
+            });
         };
     }, [currentDataset, loadData, fetchMetrics]);
 
@@ -517,6 +745,22 @@ const DataTablePage = () => {
 
     return (
         <div className="page-container" style={{ display: 'flex' }}>
+            {/* Post-commit screen overlay */}
+            {showPostCommitScreen && lastCommitData && (
+                <div style={{ position: 'fixed', inset: 0, zIndex: 9000, overflowY: 'auto' }}>
+                    <PostCommitScreen
+                        commitResult={lastCommitData.commitResult}
+                        datasetName={currentDataset?.name}
+                        targetVariable={targetVariable}
+                        beforeProfile={lastCommitData.beforeProfile}
+                        afterProfile={lastCommitData.afterProfile}
+                        onViewTable={() => { setShowPostCommitScreen(false); forceRefreshMetrics(); }}
+                        onGenerateNew={() => { setShowPostCommitScreen(false); setSidebarMode('copilot'); setStatsSidebarState('open'); }}
+                        onRollback={() => { setShowPostCommitScreen(false); setLastCommitData(null); forceRefreshMetrics(); loadData(); }}
+                        onExport={handleExport}
+                    />
+                </div>
+            )}
             <div className={`datatable-page-main-content ${statsSidebarState === 'open' ? 'stats-sidebar-open' : ''} ${insightsSidebarState === 'open' ? 'insights-sidebar-open' : ''}`}>
                 <header className="page-header animated-component">
                     <div><h1>Data Table</h1><p>Explore and analyze your datasets</p></div>
@@ -539,6 +783,17 @@ const DataTablePage = () => {
                     </div>
                     <div className="header-actions">
                         <QuickActions onAction={handleQuickAction} />
+                        {/* Last Report button — always visible, enabled after first commit */}
+                        <button
+                            className={`last-report-button ${!lastCommitData ? 'disabled' : ''}`}
+                            onClick={() => lastCommitData && setShowPostCommitScreen(true)}
+                            title={lastCommitData ? 'View the post-commit report from the last batch' : 'No report yet — commit a cleaning plan first'}
+                            disabled={!lastCommitData}
+                        >
+                            <FiFileText size={15} />
+                            Last Report
+                            {lastCommitData && <span className="report-dot" />}
+                        </button>
                         <button className={`statistics-button ${statsSidebarState === 'open' && sidebarMode === 'statistics' ? 'active' : ''}`} onClick={handleOpenStatistics}>
                             <FaChartBar /> Statistics
                         </button>
@@ -573,15 +828,18 @@ const DataTablePage = () => {
                 targetVariable={targetVariable}
                 setTargetVariable={setTargetVariable}
                 onGeneratePlans={handleGeneratePlans}
-                // --- Pass down new state and placeholder function ---
                 arePlansLoading={arePlansLoading}
                 treatmentPlans={treatmentPlans}
-                onRunSimulation={handleRunSimulation}
+                onRunSimulation={handleRunParallelSimulation}
                 isSimulating={isSimulating}
+                // Phase 5: parallel sim results replace old simulationResults
                 simulationResults={simulationResults}
-                simulationWarnings={simulationWarnings}
+                parallelSimResults={parallelSimResults}
                 onApplyPlan={handleApplyPlan}
+                onApplySimulatedPlan={handleApplySimulatedPlan}
                 isApplying={isApplyingPlan}
+                onDownloadRecipe={handleDownloadRecipe}
+                recipeAvailable={recipeAvailable}
             />
             <InsightsSidebar
                 column={sidebarColumn}

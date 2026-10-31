@@ -1,0 +1,61 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: datacraft-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: datacraft-web
+    restart: unless-stopped
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - API_AUTH_TOKEN=${API_AUTH_TOKEN:-}
+      - PUBLIC_DIR=/app/dist
+      - CORS_ORIGINS=http://localhost:5173,http://localhost:8000
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - dataset-data:/app/dist
+      - checkpoint-data:/app/backend/data
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: datacraft-worker
+    restart: unless-stopped
+    command: ["celery", "-A", "celery_worker.celery_app", "worker", "--loglevel=info", "--concurrency=4"]
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - PUBLIC_DIR=/app/dist
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - dataset-data:/app/dist
+      - checkpoint-data:/app/backend/data
+
+volumes:
+  redis-data:
+  dataset-data:
+  checkpoint-data:

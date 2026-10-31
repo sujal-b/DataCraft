@@ -1,8 +1,7 @@
 // src/context/DatasetContext.jsx
-import React, { createContext, useState, useContext, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { toast } from 'react-toastify';
-
-const DatasetContext = createContext(null);
+import { DatasetContext } from './datasetContextBase';
 
 export const DatasetProvider = ({ children }) => {
     const [datasets, setDatasets] = useState([]);
@@ -22,8 +21,8 @@ export const DatasetProvider = ({ children }) => {
                 const serverDatasets = await response.json();
                 setDatasets(serverDatasets);
 
-                if (serverDatasets.length > 0 && !currentDataset) {
-                    setCurrentDataset(serverDatasets[0]);
+                if (serverDatasets.length > 0) {
+                    setCurrentDataset(curr => curr || serverDatasets[0]);
                 }
             } catch (err) {
                 setError(err.message);
@@ -35,7 +34,6 @@ export const DatasetProvider = ({ children }) => {
         };
 
         fetchInitialDatasets();
-        
     }, []); 
 
     const addDataset = (newDataset) => {
@@ -48,16 +46,7 @@ export const DatasetProvider = ({ children }) => {
 
     const removeDataset = (datasetName) => {
         setDatasets(prev => prev.filter(d => d.name !== datasetName));
-        if (currentDataset?.name === datasetName) {
-            setDatasets(prev => {
-                if (prev.length > 0) {
-                    setCurrentDataset(prev[0]);
-                } else {
-                    setCurrentDataset(null);
-                }
-                return prev;
-            });
-        }
+        setCurrentDataset(curr => (curr?.name === datasetName ? null : curr));
     };
 
     const value = useMemo(() => ({
@@ -70,5 +59,3 @@ export const DatasetProvider = ({ children }) => {
         </DatasetContext.Provider>
     );
 };
-
-export const useDatasets = () => useContext(DatasetContext);

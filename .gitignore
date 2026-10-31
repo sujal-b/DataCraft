@@ -1,24 +1,52 @@
-# Node dependencies
-node_modules/
-
-# Python virtual environment & cache
-backend/venv/
-backend/__pycache__/
-
-# Build artifacts
-frontend/dist/
-frontend/dist-ssr/
-
-# Log files
-*.log
-npm-debug.log*
-
-# Secret keys (CRITICAL SECURITY)
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+.venv/
 .env
-*.env.*local
-backend/.env
+.env.local
+.env.*
 
-# OS & Editor specific files
-.DS_Store
+# Logs
+*.log
+
+# IDE
 .vscode/
 .idea/
+*.swp
+*.swo
+*.tmp
+
+# AI / Agent caches & tooling
+.opencode/
+.symdex/
+.workbuddy-ai/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Coverage
+.coverage
+coverage/
+htmlcov/
+
+# Testing
+.pytest_cache/
+.mypy_cache/
+
+# Dependencies (P1-15)
+node_modules/
+
+# User data & generated artifacts — never commit (P1-15, P1-3)
+public/*.csv
+public/checkpoints/
+backend/data/
+graphify-out/
+
+# Uploads that got versioned names, e.g. "name (1).csv"
+public/*\ \(1\).csv

@@ -1,0 +1,52 @@
+# DataCraft Studio | AI-Augmented Data Preparation Workspace
+# Project Architecture & File Intelligence Map (The Vein Diagram)
+# Targeted for: Senior Executives & Project Leads
+
+DataCraft Studio (v1.0.0)
+│
+├── ⚙️ Core Configuration & Orchestration
+│   ├── package.json         | Standardizes Node.js dependencies and platform scripts (Vite).
+│   ├── vite.config.js       | Configures the Lightning-fast Frontend build system and API proxy.
+│   ├── eslint.config.js     | Code Quality: Enforces enterprise-standard JavaScript linting rules. 
+│   ├── .gitignore           | Security Gate: Ensures sensitive keys (API) and cache data (venv, node_modules) stay secure.
+│   ├── LICENSE              | Legal: Standard Apache/MIT license ensuring intellectual property compliance.
+│   └── README.md            | The "Lobby": Executive-level project vision, setup, and long-term roadmap.
+│
+├── 🧠 Backend: The Intelligence Engine (Python/FastAPI/Celery)
+│   ├── main.py              | The Front Door: A secure FastAPI layer that manages API communication and request routing.
+│   ├── celery_worker.py     | The "Engine Room": Powers heavy data cleaning, profiling, and ML simulations asynchronously.
+│   ├── ai_service.py        | The Brain: Uses LLM reasoning (OpenRouter) to translate raw stats into actionable strategies.
+│   ├── data_type_detector.py| The Sorter: Intelligently categorizes columns (Identifiers, Dates, Continuous, Categorical).
+│   ├── requirements.txt     | Blueprints: Lists production libraries (Pandas, SciPy, Scikit-Learn, Celery, Redis).
+│   └── Procfile             | Cloud Deployment: Defines the production runtime processes for the web and worker layers.
+│
+├── 🎨 src: The Command Center (Frontend / React 18)
+│   ├── main.jsx             | The Spark: Entry point where the application is initialized and rendered into the DOM.
+│   ├── App.jsx              | The Architect: Orchestrates the core application structure, navigation, and layout.
+│   ├── context/
+│   │   └── DatasetContext.jsx| Data Heartbeat: The "Store" that globally manages all datasets and current user sessions.
+│   ├── pages/
+│   │   ├── DashboardPage.jsx | Business Intel: Provides a high-level view of dataset health and quality scores.
+│   │   ├── DataTablePage.jsx | Interactive Workspace: The core workbench for large-scale data manipulation.
+│   │   └── UploadPage.jsx    | Ingestion Gateway: Streamlined UI for securely uploading and versioning raw data.
+│   ├── components/
+│   │   ├── DataTable.jsx     | Enterprise-grade AG Grid interface for fast filtering and numeric standardization.
+│   │   ├── StatisticsSidebar.jsx| The Co-pilot UI: An AI-powered workspace for simulating ROI on cleaning plans.
+│   │   ├── InsightsSidebar.jsx | Detail View: Visualizes deep-dive AI column interpretations for domain experts.
+│   │   ├── Sidebar.jsx       | Global Navigation: The persistent bridge connecting the dashboard to the workbench.
+│   │   └── Layout.jsx        | Visual Harmony: Standardizes the UI layout and maintains vertical rhythm across views.
+│   ├── styles/
+│   │   ├── StatisticsSidebar.premium.css| Professional Styler: High-end CSS for an immersive and premium Co-pilot UX.
+│   │   └── App.css          | Global Layout Styles: Typography, grid systems, and layout containers.
+│   ├── index.css            | Design System: Global CSS variables, theme colors (Dark Mode), and core resets.
+│   └── assets/              | Media Vault: Contains the visual identity assets (Icons, Logos, and Images).
+│
+├── 📊 public: The Data Vault (Physical Storage)
+│   ├── titanic.csv          | Professional Sample: Classic dataset used for showcasing cleaning on real-world messiness.
+│   ├── leakage_stress_test.csv| Quality Stress: Designed specifically to test the AI's ability to catch data leakage (Target/IDs).
+│   ├── titanic.csv          | Demo Dataset: Titanic-scale training set for demonstrating rapid AI imputation.
+│   └── index.html           | The Foundation: The single-page shell that hosts the React application.
+│
+└── 🛠️ Tools & Scripts
+    ├── create_data.py       | Data Forge: Automates the generation of complex, synthetic datasets for load testing.
+    └── architecture_map.txt | DOCUMENTATION: This very file—the executive's high-level guide to the codebase.

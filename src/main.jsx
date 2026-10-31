@@ -5,11 +5,10 @@ import App from './App.jsx';
 import { DatasetProvider } from './context/DatasetContext';
 
 // 1. Import the necessary AG Grid modules
-import { ModuleRegistry } from 'ag-grid-community';
-import { AllEnterpriseModule } from 'ag-grid-enterprise';
+import { ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
 
 // 2. Register the modules correctly
-ModuleRegistry.registerModules([AllEnterpriseModule]);
+ModuleRegistry.registerModules([AllCommunityModule]);
 
 
 createRoot(document.getElementById('root')).render(

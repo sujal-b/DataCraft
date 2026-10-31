@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useDatasets } from '../context/DatasetContext';
+import { useDatasets } from '../context/useDatasets';
 import { toast } from 'react-toastify';
 import { Upload, Database, AlertTriangle, TrendingUp, Activity, Calendar, X } from 'lucide-react';
 import '../styles/Dashboard.css';
@@ -67,12 +67,6 @@ const DashboardPage = () => {
   const qualityAlerts = datasetsSummary.filter(d => d.qualityScore < 70).length;
   const avgQuality = activeDatasets > 0 ? Math.round(datasetsSummary.reduce((sum, d) => sum + d.qualityScore, 0) / activeDatasets) : 0;
   const processingJobs = datasetsSummary.filter(d => d.status === "CLEANING").length;
-
-  const getStatusColor = (status) => {
-    if (status === "RAW") return "bg-red-100 text-red-800 border-red-200";
-    if (status === "CLEANING") return "bg-yellow-100 text-yellow-800 border-yellow-200";
-    return "bg-green-100 text-green-800 border-green-200";
-  };
 
   const getStatusColorClass = (status) => {
     if (status === "CLEANED") return 'status-cleaned';
@@ -155,14 +149,39 @@ const DashboardPage = () => {
               </div>
 
               <div className="card-content">
-                <div className="quality-score-section">
-                  <span>DATA QUALITY SCORE</span>
-                  {/* 2. Apply the dynamic color class to the percentage text */}
-                  <span className={`quality-score ${qualityClass}`}>{dataset.qualityScore}%</span>
-                </div>
-                <div className="progress-bar-container">
-                  {/* 3. Apply the dynamic color class to the progress bar */}
-                  <div className={`progress-bar ${qualityClass}`} style={{ width: `${dataset.qualityScore}%` }}></div>
+                <div className="quality-score-section" style={{ display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'stretch' }}>
+                  {dataset.cleaning_effectiveness != null ? (
+                      <>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span>CLEANING EFFECTIVENESS</span>
+                            <span className="quality-score" style={{ 
+                                color: dataset.cleaning_effectiveness >= 0.75 ? '#10b981' : dataset.cleaning_effectiveness >= 0.5 ? '#f59e0b' : '#ef4444' 
+                            }}>
+                                {Math.round(dataset.cleaning_effectiveness * 100)}%
+                            </span>
+                        </div>
+                        <div className="progress-bar-container">
+                          <div className="progress-bar" style={{ 
+                              width: `${Math.round(dataset.cleaning_effectiveness * 100)}%`,
+                              background: dataset.cleaning_effectiveness >= 0.75 ? '#10b981' : dataset.cleaning_effectiveness >= 0.5 ? '#f59e0b' : '#ef4444'
+                          }}/>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '2px' }}>
+                            <span style={{ fontSize: '0.7em', color: '#9ca3af' }}>OVERALL QUALITY SCORE</span>
+                            <span style={{ fontSize: '0.8em', color: '#9ca3af', fontWeight: 'bold' }}>{dataset.qualityScore.toFixed(1)}%</span>
+                        </div>
+                      </>
+                  ) : (
+                      <>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span>DATA QUALITY SCORE</span>
+                            <span className={`quality-score ${qualityClass}`}>{dataset.qualityScore.toFixed(1)}%</span>
+                        </div>
+                        <div className="progress-bar-container">
+                          <div className={`progress-bar ${qualityClass}`} style={{ width: `${dataset.qualityScore}%` }}/>
+                        </div>
+                      </>
+                  )}
                 </div>
                 <div className="quality-breakdown-grid">
                   {/* 4. Add a title attribute for the tooltip */}

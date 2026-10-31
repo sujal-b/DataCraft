@@ -2,7 +2,7 @@
 import React, { useState, useCallback } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { useNavigate } from 'react-router-dom';
-import { useDatasets } from '../context/DatasetContext';
+import { useDatasets } from '../context/useDatasets';
 import { FaFileCsv } from 'react-icons/fa';
 import { toast } from 'react-toastify';
 import '../styles/UploadPage.css';
@@ -51,7 +51,6 @@ const UploadPage = () => {
       });
 
       toast.success(result.message);
-      addDataset(result);
       navigate('/dashboard');
 
     } catch (error) {

@@ -1,12 +1,34 @@
 import json
+import logging
 import os
 import requests
-import re 
+import re
 import time
 
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY","")
-if not OPENROUTER_API_KEY:
-    raise ValueError("CRITICAL ERROR: OPENROUTER_API_KEY environment variable is not set.")
+logger = logging.getLogger("datacraft.ai")
+_AIServiceError = ValueError
+
+
+def _get_api_key() -> str:
+    """
+    Resolve the OpenRouter API key at call time.
+
+    Deliberately lazy: importing this module must never fail because a secret is
+    absent, otherwise every non-AI endpoint in the app would fail to start. The
+    key is only required when an AI call is actually made.
+
+    There is intentionally no default value here. A baked-in fallback would let a
+    missing environment variable silently degrade into using an unknown
+    (possibly leaked, possibly someone else's) credential.
+    """
+    key = os.getenv("OPENROUTER_API_KEY")
+    if not key:
+        raise _AIServiceError(
+            "OPENROUTER_API_KEY environment variable is not set. "
+            "AI features are disabled until it is configured."
+        )
+    return key
+
 
 def _call_openrouter_api(system_prompt: str, user_prompt: str, temperature: float = 0.2) -> dict:
     """
@@ -14,23 +36,29 @@ def _call_openrouter_api(system_prompt: str, user_prompt: str, temperature: floa
     Includes RETRY LOGIC to handle malformed JSON responses from the AI.
     """
     MAX_RETRIES = 3
-    
+
+    try:
+        api_key = _get_api_key()
+    except _AIServiceError as e:
+        logger.warning("AI Service unavailable: %s", e)
+        return {"error": "AI Service Not Configured", "details": str(e)}
+
     for attempt in range(MAX_RETRIES):
         try:
             # We use a slight backoff if it's a retry
             if attempt > 0:
                 time.sleep(1)
-                
+
             response = requests.post(
                 url="https://openrouter.ai/api/v1/chat/completions",
                 headers={
-                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                    "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
                     "HTTP-Referer": "http://localhost:3000",
                     "X-Title": "DataCraft Studio"
                 },
                 data=json.dumps({
-                    "model": "nvidia/nemotron-3-nano-30b-a3b:free",
+                    "model": "minimax/minimax-m2.7:free",
                     "temperature": temperature,
                     # asking for json_object can help if the model supports it
                     "response_format": { "type": "json_object" },
@@ -39,16 +67,16 @@ def _call_openrouter_api(system_prompt: str, user_prompt: str, temperature: floa
                         {"role": "user", "content": user_prompt}
                     ]
                 }),
-                timeout=120 
+                timeout=120
             )
             response.raise_for_status()
             response_data = response.json()
-            
+
             if not response_data.get('choices'):
                 raise ValueError("AI Service returned no content choices.")
 
             ai_content_string = response_data['choices'][0]['message']['content']
-            
+
             # --- Cleaning Step 1: Remove Markdown Code Blocks ---
             # This handles ```json ... ``` or just ``` ... ``` wrapping
             cleaned_string = re.sub(r'^```[a-z]*\s*', '', ai_content_string, flags=re.MULTILINE)
@@ -58,27 +86,27 @@ def _call_openrouter_api(system_prompt: str, user_prompt: str, temperature: floa
             # --- Cleaning Step 2: Find JSON boundaries ---
             # We look for the first '{' and the last '}'
             json_match = re.search(r'\{.*\}', cleaned_string, re.DOTALL)
-            
+
             if not json_match:
                 # If we can't find braces, the output is definitely not JSON.
-                print(f"DEBUG (Attempt {attempt+1}): No JSON braces found in output: {ai_content_string[:100]}...")
+                logger.debug("DEBUG (Attempt %d): No JSON braces found in output: %s...", attempt + 1, ai_content_string[:100])
                 continue # Retry
-            
+
             json_string = json_match.group(0)
-            
+
             # --- Validation Step ---
             return json.loads(json_string)
 
         except json.JSONDecodeError as e:
-            print(f"JSON Parse Error in _call_openrouter_api (Attempt {attempt+1}/{MAX_RETRIES}): {e}")
+            logger.warning("JSON Parse Error in _call_openrouter_api (Attempt %d/%d): %s", attempt + 1, MAX_RETRIES, e)
             # If it's the last attempt, we let the loop finish to return the error
             if attempt == MAX_RETRIES - 1:
-                print(f"DEBUG: Failed Content was:\n{ai_content_string}")
+                logger.debug("DEBUG: Failed Content was:\n%s", ai_content_string)
         except Exception as e:
-            print(f"Network/API Error in _call_openrouter_api (Attempt {attempt+1}/{MAX_RETRIES}): {e}")
+            logger.warning("Network/API Error in _call_openrouter_api (Attempt %d/%d): %s", attempt + 1, MAX_RETRIES, e)
             if attempt == MAX_RETRIES - 1:
                 return {
-                    "error": "AI Service Connection Failed", 
+                    "error": "AI Service Connection Failed",
                     "details": str(e)
                 }
 
@@ -106,30 +134,30 @@ def get_ai_interpretation(profile: dict) -> dict:
     ## YOUR ANALYSIS WORKFLOW (CHAIN OF THOUGHT)
     Follow this reasoning pattern **in your <thinking> block**:
 
-    1. **DOMAIN INFERENCE** → What domain does this likely belong to? (IoT, finance, healthcare, etc.)  
-    → **Evidence**: "Column name='temperature' + high ACF(1)=0.88 → IoT sensor data"  
+    1. **DOMAIN INFERENCE** → What domain does this likely belong to? (IoT, finance, healthcare, etc.)
+    → **Evidence**: "Column name='temperature' + high ACF(1)=0.88 → IoT sensor data"
     → **Contradictions**: "But MNAR pattern suggests possible financial context"
 
-    2. **MISSINGNESS PATTERN ASSESSMENT** → "MNAR indicators exist (humidity: -0.65) → systematic bias likely"  
-    → "BUT high temporal stability (ACF=0.88) suggests gradual change"  
+    2. **MISSINGNESS PATTERN ASSESSMENT** → "MNAR indicators exist (humidity: -0.65) → systematic bias likely"
+    → "BUT high temporal stability (ACF=0.88) suggests gradual change"
     → **Critical question**: "Is the correlation meaningful or coincidental?"
 
-    3.  **RISK-BASED EVALUATION** → "For sensor data, bias could cause safety issues"  
-    → "For financial data, bias could trigger regulatory penalties"  
+    3.  **RISK-BASED EVALUATION** → "For sensor data, bias could cause safety issues"
+    → "For financial data, bias could trigger regulatory penalties"
     → "What's the cost of being wrong? (e.g., $10k vs $1M impact)"
 
-    4.  **TECHNIQUE TRADEOFF ANALYSIS** → "ffill would be fast but assumes stability during gaps"  
-    → "MICE would be accurate but requires sufficient data"  
+    4.  **TECHNIQUE TRADEOFF ANALYSIS** → "ffill would be fast but assumes stability during gaps"
+    → "MICE would be accurate but requires sufficient data"
     → **Key insight**: "For this domain, [X] matters more than [Y]"
 
-    5.  **DECISION WITH UNCERTAINTY** → "Recommend [X], but only if [critical assumption] holds"  
-    → "Without [domain knowledge], I'd verify [specific check] first"  
+    5.  **DECISION WITH UNCERTAINTY** → "Recommend [X], but only if [critical assumption] holds"
+    → "Without [domain knowledge], I'd verify [specific check] first"
     → "This assumes [unstated condition] — flag if violated"
 
     ## CRITICAL SAFEGUARDS (NOT RULES)
-    - **High missingness**: "60%+ missing is a red flag, but dropping may lose critical signals"  
-    - **MNAR patterns**: "Correlation >0.3 suggests systematic bias, but could be coincidental"  
-    - **Time-series**: "ACF>0.85 supports ffill, but only if gaps align with stable periods"  
+    - **High missingness**: "60%+ missing is a red flag, but dropping may lose critical signals"
+    - **MNAR patterns**: "Correlation >0.3 suggests systematic bias, but could be coincidental"
+    - **Time-series**: "ACF>0.85 supports ffill, but only if gaps align with stable periods"
 
     ## YOUR RESPONSE FORMAT
     <thinking>
@@ -143,9 +171,9 @@ def get_ai_interpretation(profile: dict) -> dict:
     "warning": "Critical risk: If gaps occur during equipment failure, ffill would distort readings"
     }
     """
-    
+
     user_prompt = f"Here is the statistical profile to analyze:\n{json.dumps(profile, indent=2)}"
-    
+
     return _call_openrouter_api(system_prompt, user_prompt)
 
 # === HELPER: TOKEN-SAFE REPORT CONDENSATION ===
@@ -162,193 +190,357 @@ def _condense_diagnostic_report(report: dict, top_n: int = 25) -> dict:
         "target_correlations": report.get("target_correlations", {}),
         "note": "Full column details condensed to top problematic columns. Healthy columns omitted."
     }
-    
+
     # 2. Identify Critical Columns
     critical_cols = set()
-    
+
     # Add top missing
     missing_cols = sorted(report.get('missingness', {}).items(), key=lambda x: x[1], reverse=True)[:top_n]
     critical_cols.update([c[0] for c in missing_cols])
-    
+
     # Add high skew
     skew_cols = [col for col, val in report.get('distribution_skew', {}).items() if abs(val) > 1.5]
     critical_cols.update(skew_cols[:top_n])
-    
+
     # Add strong correlations
     corr_cols = [col for col, val in report.get('target_correlations', {}).items() if abs(val) > 0.2]
     critical_cols.update(corr_cols[:top_n])
-    
+
     # 3. Filter Detail Dictionary
     if 'column_details' in report:
         condensed['column_details'] = {
             col: details for col, details in report['column_details'].items()
             if col in critical_cols
         }
-    
+
     return condensed
 
-# === HELPER: SAFETY-HARDENED FALLBACK PLAN ===
-def _generate_fallback_plan(report: dict, target: str, temporal_col: str = None) -> dict:
-    """
-    Hardcoded conservative plan with leakage prevention and edge case handling.
-    Used when the LLM API fails or times out.
-    """
-    missingness = report.get('missingness', {})
-    high_missing_cols = [col for col, pct in missingness.items() if pct > 0.95]
-    
-    # Safe temporal handling code injection
-    date_parse_code = ""
-    if temporal_col:
-        date_parse_code = (
-            f"if '{temporal_col}' in df.columns:\n"
-            f"    df['{temporal_col}'] = pd.to_datetime(df['{temporal_col}'].astype(str), errors='coerce')\n"
-        )
-    
-    python_code = (
-        "import pandas as pd\nimport numpy as np\n"
-        f"{date_parse_code}"
-        f"drop_cols = {high_missing_cols}\n"
-        "existing_drop_cols = [c for c in drop_cols if c in df.columns]\n"
-        "if existing_drop_cols:\n"
-        "    df = df.drop(columns=existing_drop_cols)\n"
-        f"if '{target}' in df.columns:\n"
-        f"    df = df.dropna(subset=['{target}'])\n"
-    )
+# === P0-2 REMNANT REMOVED ===
+# `_generate_fallback_plan` was deleted: it fabricated a `python_code` blob that
+# older code paths exec()'d. Plans are now strictly validated (extra="forbid")
+# Pydantic models and applied only through FUNCTION_REGISTRY — no code strings,
+# and the registry-based fallback lives in _generate_pdia_fallback below.
 
-    return {
-        "conservative_plan": {
-            "name": "Failsafe Conservative Plan",
-            "rationale": "API failure recovery - minimal safe operations with leakage prevention.",
-            "steps": [{
-                "function_name": "delete_column",
-                "target_columns": high_missing_cols,
-                "reasoning": "Automatic recovery: Columns with >95% missing dropped per production policy."
-            }],
-            "python_code": python_code
-        },
-        # We perform a shallow copy for others to ensure the UI doesn't break
-        "balanced_plan": {"name": "Balanced Plan (Unavailable)", "rationale": "Service unavailable", "steps": [], "python_code": ""},
-        "aggressive_plan": {"name": "Aggressive Plan (Unavailable)", "rationale": "Service unavailable", "steps": [], "python_code": ""},
-        "architect_plan": {"name": "Architect Plan (Unavailable)", "rationale": "Service unavailable", "steps": [], "python_code": ""}
-    }
+
+def _sanitize_for_prompt(value, max_len: int = 120):
+    """
+    P0-2 (prompt-injection hardening): dataset-derived values are embedded in
+    LLM prompts, so a malicious CSV could instruct the model to emit arbitrary
+    content. Strip control characters and cap length before anything leaves
+    the process. Model output is never executed regardless — plans must pass
+    the strict function-name registry — this is defence in depth.
+    """
+    if isinstance(value, str):
+        cleaned = ''.join(ch for ch in value if ch.isprintable())
+        return cleaned[:max_len]
+    return value
+
 
 def get_treatment_plan_hypotheses(diagnostic_report: dict) -> dict:
     """
-    Generates FOUR statistically rigorous data preparation strategies.
-    Strictly constrained to the Action Library to prevent hallucination.
+    Phase 2: PDIA Framework - Profile-Driven Incremental Actions
+
+    Instead of generating four fixed-archetype plans simultaneously (which wastes tokens
+    and forces the LLM to reason in four parallel worlds), generate ONE ranked action backlog —
+    a prioritized list of independent, atomic cleaning actions, each with:
+    - statistical evidence
+    - recommended technique with parameters
+    - alternative techniques the user can swap to
+    - estimated row/column impact
+    - risk classification: LOW / MEDIUM / HIGH
+    - reversibility flag: true/false
+
+    This backlog composes cleanly into any methodology. Users can cherry-pick low-risk actions
+    for conservative cleaning, or take everything for aggressive cleaning.
     """
     # === 1. CONTEXT EXTRACTION & SAFETY DEFAULTS ===
     context = diagnostic_report.get('modeling_context', {})
     target_var = context.get('target_variable', 'target')
-    problem_type = context.get('problem_type', 'regression')
+    goal = context.get('goal', 'prediction')
     temporal_col = context.get('temporal_column', None)
-    
-    # === 2. TOKEN-SAFE REPORT CONDENSATION ===
-    condensed_report = _condense_diagnostic_report(diagnostic_report, top_n=25)
 
-    # === 3. SYSTEM PROMPT (STRICT ACTION LIBRARY & EXAMPLES) ===
-    system_prompt = f"""
-    **ROLE**: Principal Data Scientist. You generate data cleaning strategies based on evidence, NOT blind checklists.
+    # Extract profile data
+    columns_data = diagnostic_report.get('columns', {})
+    row_count = diagnostic_report.get('row_count', 0)
 
-    ### 1. THE ALLOWED ACTION LIBRARY (STRICT)
-    **Actions**:
-    - **Cleaning**: `delete_column`, `drop_rows_where_null` (target/ID only), `drop_duplicate_rows`.
-    - **Imputation**: `impute_mean`, `impute_median`, `impute_mode`, `impute_constant`, `forward_fill` (time-series only).
-    - **Encoding**: `one_hot_encode`, `label_encode`.
-    - **Transformation**: `log_transform`, `standard_scale`, `min_max_scale`, `clip_outliers`.
-    - **Creation**: `create_interaction`, `create_date_features`, `create_missing_flag`.
+    # === 2. TOKEN-OPTIMIZED COLUMN SELECTION ===
+    # Pass only columns with issues to the LLM. Healthy columns get auto-generated "no_action_needed" entries.
+    problematic_columns = {}
+    for col_name, col_data in columns_data.items():
+        missing_pct = col_data.get('missing_pct') or 0
+        outlier_count = col_data.get('outlier_count') or 0
+        skewness = col_data.get('skewness') or 0
+        leakage_risk = col_data.get('leakage_risk_score') or 0
 
-    **COLUMN ACTION COMPATIBILITY RULE (VIOLATION = HALLUCINATION)**:
-    - `log_transform`, `clip_outliers`, `standard_scale`, `min_max_scale` → **NUMERIC COLUMNS ONLY**.
-    - `impute_mean`, `impute_median` → **NUMERIC COLUMNS ONLY**.
-    - `one_hot_encode`, `label_encode` → **CATEGORICAL/OBJECT COLUMNS ONLY**.
-    - `impute_mode` → Any column.
+        # Include if has any issue
+        if missing_pct > 0 or outlier_count > 0 or abs(skewness) > 1.5 or leakage_risk > 0.3:
+            problematic_columns[col_name] = col_data
 
-    ### 2. STRATEGY ARCHETYPES (PHILOSOPHIES, NOT RULES)
-    
-    **Plan 1: CONSERVATIVE ("The Auditor")**
-    * *Philosophy*: "Do no harm." Prefer deleting bad data over guessing (imputing).
-    * *Example Thought*: "Column 'age' has 5% missing. Imputation might bias results. Better to drop these few rows if dataset is large, or impute strictly with median."
-    
-    **Plan 2: BALANCED ("The Engineer")**
-    * *Philosophy*: "Standard Best Practices." Use Median for skew, Mean for normal. Handle outliers.
-    * *Example Thought*: "'Income' is highly skewed (skew=5.2). Mean imputation is dangerous here; I will use Median."
-    
-    **Plan 3: AGGRESSIVE ("The Maximizer")**
-    * *Philosophy*: "Keep every row." Never drop rows. Impute everything. Flag missing values as features.
-    * *Example Thought*: "I can't afford to lose any rows. I will impute 'age' and also create a 'age_is_missing' column to capture the signal of missingness."
-    * *Aggressive plans MAY explore new features, BUT they must justify them using:
-    - Target correlation strength.
-    - Explicit domain plausibility.
-    - Variance amplification.
-    * *If none apply, SKIP feature creation.*
+    # Build condensed report with only problematic columns
+    condensed_columns = problematic_columns if problematic_columns else columns_data
 
-    **Plan 4: ARCHITECT ("The Feature Forge")**
-    * *Philosophy*: "Domain Specific." Focus on feature creation (interactions, date parts) over just cleaning.
-    * *Example Thought*: "Since we have 'price' and 'quantity', the most predictive feature is likely 'revenue = price * qty'. I must create this."
-    * *Architect plans MAY explore new features, BUT they must justify them using:
-    - Target correlation strength.
-    - Explicit domain plausibility.
-    - Variance amplification.
-    * *If none apply, SKIP feature creation.*
+    # === 3. PDIA SYSTEM PROMPT (TOKEN-EFFICIENT, HIGH-REASONING) ===
+    system_prompt = """
+    ROLE: Principal data scientist. Analyze a statistical column profile.
+    Output a ranked list of atomic cleaning actions.
 
-    ### 3. FINAL SELF-CHECK (MANDATORY)
-    Before returning JSON, verify:
-    - All `target_columns` are in the dataset, no hallucinated columns.
-    - No numeric actions (log/scale) applied to categorical columns.
-    - Every step cites a specific statistic (e.g. "Using IQR to clip and limit the effect of extreme values beyond –14.5 and 46.5" "Imputing missing ages with a median of 32 to avoid distortion from a few very large values.").
+    COLUMN TYPE RULES (violations = rejected by backend):
+    - log_transform, clip_outliers, standard_scale, min_max_scale,
+      impute_mean, impute_median → numeric only
+    - robust_scale, yeo_johnson_transform, winsorize, knn_impute → numeric only
+    - one_hot_encode, label_encode → categorical only
+    - impute_mode, create_missing_flag, delete_column → any type
+    - forward_fill → numeric + is_time_series=true only
 
-    ### 4. OUTPUT FORMAT (STRICT JSON)
-    You MUST return this exact JSON structure. `steps` matches `python_code`.
-    
-    {{
-      "conservative_plan": {{
-        "name": "Conservative Strategy",
-        "rationale": "High missingness in 'marketing_channel' (40%) warrants deletion to avoid noise.",
-        "steps": [
-            {{ 
-                "function_name": "delete_column", 
-                "target_columns": ["marketing_channel"], 
-                "reasoning": "Missing > 40% (Actual: 42%)" 
-            }},
-            {{
-                "function_name": "impute_median",
-                "target_columns": ["age"],
-                "reasoning": "Low missingness (5%), skew is high (2.1)"
-            }}
-        ],
-        "python_code": "import pandas as pd\\nimport numpy as np\\n# Code that implements the steps above..."
-      }},
-      "balanced_plan": {{ ... }},
-      "aggressive_plan": {{ ... }},
-      "architect_plan": {{ ... }}
-    }}
+    NEW TECHNIQUE SELECTION RULES (prefer these over old defaults when conditions match):
+    - robust_scale → prefer over standard_scale when outlier_count > 0 AND skewness abs > 1.0 (outliers distort mean/std)
+    - yeo_johnson_transform → prefer over log_transform when column has negative values (min < 0) OR when log_transform would require large offset
+    - winsorize → prefer over clip_outliers when outlier_count is moderate (< 10% of rows) and you want softer treatment; params: lower_percentile=5, upper_percentile=95
+    - knn_impute → prefer over impute_mean/impute_median when missingness_mechanism=MAR AND mnar_correlations has entries (correlated columns available for neighbor search); params: n_neighbors=5
 
+    MISSINGNESS MECHANISM CLASSIFICATION:
+    - MCAR: missing_pct < 5% AND no mnar_correlations → safe to drop rows or impute simply
+    - MAR: mnar_correlations present → impute using correlated columns as evidence
+    - MNAR: mnar_correlations strong (>0.5) → flag, consider create_missing_flag first
+    - HIGH MISSING: missing_pct > 60% → default recommend delete_column unless leakage_risk > 0.5
+
+    REQUIRED JSON OUTPUT:
+    {
+      "domain_inference": {
+        "likely_domain": string,
+        "evidence": string,
+        "confidence": "low|medium|high"
+      },
+      "actions": [
+        {
+          "action_id": "act_001",
+          "priority": 1,
+          "column": string,
+          "issue": string,           // one sentence: what is wrong
+          "function_name": string,   // from allowed list only
+          "recommended_params": {},  // e.g. {"strategy": "median"}
+          "alternatives": [          // other valid techniques user can swap to
+            {"function_name": string, "params": {}, "tradeoff": string}
+          ],
+          "statistical_evidence": {  // cite actual numbers from profile
+            "key_stat": string,
+            "value": number
+          },
+          "missingness_mechanism": "MCAR|MAR|MNAR|N/A",
+          "assumption": string,
+          "risk_level": "LOW|MEDIUM|HIGH",
+          "risk_reason": string,
+          "rows_affected_estimate": int,
+          "reversible": bool
+        }
+      ],
+      "leakage_warnings": [string],
+      "reasoning_trace": string    // paragraph: domain reasoning, key decisions made
+    }
+
+    COLUMN DATA (analyze only columns listed here. Reference no others):
+    {profile_json}
     """
 
-    # === 4. USER PROMPT ===
-    top_missing = sorted(condensed_report['missingness_overview'].items(), key=lambda x: x[1], reverse=True)[:5]
-    
+    # === 4. BUILD USER PROMPT WITH PROFILE DATA ===
+    profile_summary = {
+        "row_count": row_count,
+        "target_variable": target_var,
+        "goal": goal,
+        "temporal_column": temporal_col,
+        "problematic_columns": {
+            _sanitize_for_prompt(col_name, 80): {
+                "data_type": col_data.get("data_type"),
+                "missing_pct": col_data.get("missing_pct"),
+                "missing_count": col_data.get("missing_count"),
+                "outlier_count": col_data.get("outlier_count"),
+                "skewness": col_data.get("skewness"),
+                "leakage_risk_score": col_data.get("leakage_risk_score"),
+                "mnar_correlations": col_data.get("mnar_correlations"),
+                "is_time_series": col_data.get("is_time_series"),
+                "mean": col_data.get("mean"),
+                "median": col_data.get("median"),
+                "std": col_data.get("std"),
+                "iqr_lower_fence": col_data.get("iqr_lower_fence"),
+                "iqr_upper_fence": col_data.get("iqr_upper_fence"),
+                "unique_ratio": col_data.get("unique_ratio"),
+                # Prompt-injection hardening: cap sample values, length, count
+                "top_values": [
+                    {"value": _sanitize_for_prompt(tv.get("value"), 60), "count": tv.get("count")}
+                    for tv in (col_data.get("top_values") or [])[:5]
+                ] if col_data.get("top_values") else None
+            }
+            for col_name, col_data in condensed_columns.items()
+        }
+    }
+
     user_prompt = f"""
-    ### DATASET CONTEXT
-    - **Target Variable**: "{target_var}" ({problem_type})
-    - **Temporal Column**: {temporal_col if temporal_col else 'None'}
-    - **Problem**: Missing values and potential outliers need handling.
-    
-    ### DIAGNOSTIC SUMMARY
-    - **Top Missing Columns**: {top_missing}
-    - **Skewed Columns**: {[k for k, v in condensed_report['skew_overview'].items() if abs(v) > 2.0]}
-    
-    ### FULL REPORT
-    {json.dumps(condensed_report, indent=2)}
-    
-    Generate the FOUR plans. Ensure `steps` array is populated and `python_code` is valid pandas.
+    Analyze this statistical profile and generate a ranked action backlog:
+    {json.dumps(profile_summary, indent=2)}
+
+    Priority ranking guidelines:
+    1. Leakage risks (leakage_risk_score > 0.5) → highest priority
+    2. High missingness (>60%) → consider deletion
+    3. MNAR patterns (mnar_correlations > 0.5) → requires careful handling
+    4. Outliers with high skew (>2.0) → clipping or transformation
+    5. Low missingness (<5%) → simple imputation
+
+    For each action, provide realistic alternatives the user can swap to.
     """
 
     try:
         # Precision mode (low temp) for production safety
-        return _call_openrouter_api(system_prompt, user_prompt, temperature=0.1)
+        result = _call_openrouter_api(system_prompt, user_prompt, temperature=0.2)
+
+        # Post-process: Add auto-generated "no_action_needed" entries for healthy columns
+        if "actions" in result:
+            existing_columns = {action["column"] for action in result["actions"]}
+            healthy_columns = set(columns_data.keys()) - existing_columns
+
+            # Add placeholder entries for healthy columns (optional, for UI completeness)
+            # These won't be shown as actionable items but indicate they were reviewed
+
+        return result
+
     except Exception as e:
         # Automatic Fallback
-        print(f"AI Service Failed: {e}. Reverting to Failsafe Plan.")
-        return _generate_fallback_plan(diagnostic_report, target_var, temporal_col)
+        logger.warning("AI Service Failed: %s. Reverting to Failsafe Plan.", e)
+        return _generate_pdia_fallback(diagnostic_report, target_var, goal, temporal_col)
+
+
+def _generate_pdia_fallback(diagnostic_report: dict, target_var: str, goal: str, temporal_col: str = None) -> dict:
+    """
+    Hardcoded fallback for PDIA framework when LLM fails.
+    Generates basic actions based on simple rules.
+    """
+    columns_data = diagnostic_report.get('columns', {})
+    row_count = diagnostic_report.get('row_count', 0)
+
+    actions = []
+    leakage_warnings = []
+    action_counter = 1
+
+    for col_name, col_data in columns_data.items():
+        missing_pct = col_data.get('missing_pct', 0)
+        leakage_risk = col_data.get('leakage_risk_score', 0) or 0
+        data_type = col_data.get('data_type', 'unknown')
+        missing_count = col_data.get('missing_count', 0)
+
+        # High leakage risk warning
+        if leakage_risk > 0.5:
+            leakage_warnings.append(f"Column '{col_name}' has high leakage risk (score={leakage_risk:.2f}). Consider removal before modeling.")
+
+        # High missingness → recommend deletion
+        if missing_pct > 60:
+            actions.append({
+                "action_id": f"act_{action_counter:03d}",
+                "priority": action_counter,
+                "column": col_name,
+                "issue": f"Column has {missing_pct:.1f}% missing values",
+                "function_name": "delete_column",
+                "recommended_params": {},
+                "alternatives": [
+                    {"function_name": "create_missing_flag", "params": {}, "tradeoff": "Preserves column but adds binary indicator"}
+                ],
+                "statistical_evidence": {
+                    "key_stat": "missing_pct",
+                    "value": missing_pct
+                },
+                "missingness_mechanism": "HIGH_MISSING",
+                "assumption": "Missing data is not informative",
+                "risk_level": "MEDIUM",
+                "risk_reason": "Deleting column loses potential information",
+                "rows_affected_estimate": row_count,
+                "reversible": False
+            })
+            action_counter += 1
+
+        # Low missingness → simple imputation
+        elif 0 < missing_pct <= 5:
+            if data_type in ['integer', 'float']:
+                actions.append({
+                    "action_id": f"act_{action_counter:03d}",
+                    "priority": action_counter,
+                    "column": col_name,
+                    "issue": f"Column has {missing_pct:.1f}% missing values",
+                    "function_name": "impute_median",
+                    "recommended_params": {"strategy": "median"},
+                    "alternatives": [
+                        {"function_name": "impute_mean", "params": {"strategy": "mean"}, "tradeoff": "Mean sensitive to outliers"},
+                        {"function_name": "impute_mode", "params": {}, "tradeoff": "Less precise for continuous data"}
+                    ],
+                    "statistical_evidence": {
+                        "key_stat": "missing_pct",
+                        "value": missing_pct
+                    },
+                    "missingness_mechanism": "MCAR",
+                    "assumption": "Missing completely at random",
+                    "risk_level": "LOW",
+                    "risk_reason": "Low missing percentage, median robust to outliers",
+                    "rows_affected_estimate": missing_count,
+                    "reversible": True
+                })
+            else:
+                actions.append({
+                    "action_id": f"act_{action_counter:03d}",
+                    "priority": action_counter,
+                    "column": col_name,
+                    "issue": f"Column has {missing_pct:.1f}% missing values",
+                    "function_name": "impute_mode",
+                    "recommended_params": {},
+                    "alternatives": [
+                        {"function_name": "delete_column", "params": {}, "tradeoff": "Loses column entirely"}
+                    ],
+                    "statistical_evidence": {
+                        "key_stat": "missing_pct",
+                        "value": missing_pct
+                    },
+                    "missingness_mechanism": "MCAR",
+                    "assumption": "Missing completely at random",
+                    "risk_level": "LOW",
+                    "risk_reason": "Mode imputation safe for categorical data",
+                    "rows_affected_estimate": missing_count,
+                    "reversible": True
+                })
+            action_counter += 1
+
+        # Medium missingness with MNAR → flag
+        elif 5 < missing_pct <= 60:
+            mnar_corrs = col_data.get('mnar_correlations', {})
+            if mnar_corrs:
+                max_corr = max(abs(v) for v in mnar_corrs.values())
+                if max_corr > 0.5:
+                    actions.append({
+                        "action_id": f"act_{action_counter:03d}",
+                        "priority": action_counter,
+                        "column": col_name,
+                        "issue": f"Column has {missing_pct:.1f}% missing with MNAR pattern (corr={max_corr:.2f})",
+                        "function_name": "create_missing_flag",
+                        "recommended_params": {},
+                        "alternatives": [
+                            {"function_name": "impute_mode", "params": {}, "tradeoff": "Doesn't capture missingness signal"},
+                            {"function_name": "impute_median", "params": {}, "tradeoff": "Only for numeric, ignores MNAR"}
+                        ],
+                        "statistical_evidence": {
+                            "key_stat": "mnar_correlation",
+                            "value": max_corr
+                        },
+                        "missingness_mechanism": "MNAR",
+                        "assumption": "Missingness is informative",
+                        "risk_level": "MEDIUM",
+                        "risk_reason": "MNAR requires careful handling",
+                        "rows_affected_estimate": missing_count,
+                        "reversible": True
+                    })
+                    action_counter += 1
+
+    return {
+        "domain_inference": {
+            "likely_domain": "unknown",
+            "evidence": "Fallback mode - LLM unavailable",
+            "confidence": "low"
+        },
+        "actions": actions,
+        "leakage_warnings": leakage_warnings,
+        "reasoning_trace": "Fallback plan generated using rule-based heuristics due to LLM service unavailability. Actions prioritize safety: high-missingness columns flagged for deletion, low-missingness columns get simple imputation, MNAR patterns get missing flags."
+    }

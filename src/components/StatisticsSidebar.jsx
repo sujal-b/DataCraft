@@ -2,9 +2,11 @@ import React, { useState, useMemo } from 'react';
 import '../styles/StatisticsSidebar.premium.css'; 
 import { 
     FiDatabase, FiTrendingUp, FiShield, FiBarChart2, FiTool, FiTarget, FiZap,
-    FiCheckCircle, FiChevronRight, FiTrendingUp as TrendIcon, FiCode, FiX, FiLock, FiTerminal
+    FiCheckCircle, FiChevronRight, FiTrendingUp as TrendIcon, FiCode, FiX, FiLock,
+    FiTerminal, FiDownload, FiActivity, FiAlertCircle, FiClock, FiAward
 } from 'react-icons/fi';
 import { toast } from 'react-toastify';
+import ActionBacklogPanel from './ActionBacklogPanel';
 
 const Loader = ({ text = "Calculating Statistics..." }) => (
     <div className="stats-loader-container">
@@ -74,6 +76,257 @@ const CodePreviewModal = ({ plan, onClose }) => {
                     </pre>
                 </div>
             </div>
+        </div>
+    );
+};
+
+// ============================================================================
+// PHASE 5.2: EFFECTIVENESS GAUGE COMPONENT
+// ============================================================================
+const EffectivenessGauge = ({ score, components }) => {
+    const pct   = Math.round((score ?? 0) * 100);
+    const color = pct >= 75 ? '#10b981' : pct >= 50 ? '#f59e0b' : '#ef4444';
+    const label = pct >= 75 ? 'Excellent' : pct >= 50 ? 'Good' : 'Needs Work';
+
+    // SVG arc for needle gauge
+    const r = 52, cx = 64, cy = 64;
+    const startAngle = -210, endAngle = 30;
+    const totalDeg   = endAngle - startAngle;
+    const toRad = (d) => (d * Math.PI) / 180;
+    const arcX  = (angle, radius) => cx + radius * Math.cos(toRad(angle));
+    const arcY  = (angle, radius) => cy + radius * Math.sin(toRad(angle));
+
+    const arcPath = [
+        'M', arcX(startAngle, r), arcY(startAngle, r),
+        'A', r, r, 0, 1, 1, arcX(endAngle, r), arcY(endAngle, r)
+    ].join(' ');
+    const filledPath = [
+        'M', arcX(startAngle, r), arcY(startAngle, r),
+        'A', r, r, 0, (totalDeg * (pct / 100) > 180 ? 1 : 0), 1,
+        arcX(startAngle + (pct / 100) * totalDeg, r),
+        arcY(startAngle + (pct / 100) * totalDeg, r)
+    ].join(' ');
+
+    return (
+        <div className="effectiveness-gauge-container">
+            <h4 style={{ margin: '0 0 12px', display: 'flex', alignItems: 'center', gap: 6, color: '#1f2937' }}>
+                <FiAward size={18} color={color} /> Cleaning Effectiveness
+            </h4>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                <svg viewBox="0 0 128 80" width="180" style={{ overflow: 'visible' }}>
+                    {/* Track */}
+                    <path d={arcPath} fill="none" stroke="#e5e7eb" strokeWidth="10" strokeLinecap="round" />
+                    {/* Filled */}
+                    <path d={filledPath} fill="none" stroke={color} strokeWidth="10" strokeLinecap="round"
+                          style={{ transition: 'stroke-dasharray 0.8s ease' }}/>
+                    {/* Score text */}
+                    <text x={cx} y={cy - 2} textAnchor="middle" fontSize="22" fontWeight="700" fill={color}>{pct}%</text>
+                    <text x={cx} y={cy + 14} textAnchor="middle" fontSize="9" fill="#6b7280">{label}</text>
+                </svg>
+
+                {/* Component breakdown */}
+                {components && (
+                    <div className="effectiveness-breakdown">
+                        {[
+                            { key: 'missing_reduction_score', label: 'Missing↓', weight: '30%' },
+                            { key: 'skew_reduction_score',    label: 'Skew↓',    weight: '20%' },
+                            { key: 'ml_improvement_score',   label: 'ML↑',      weight: '40%' },
+                            { key: 'leakage_absence_score',  label: 'No Leak',  weight: '10%' },
+                        ].map(({ key, label, weight }) => {
+                            const val = components[key] ?? 0;
+                            const valPct = Math.round(val * 100);
+                            const c = valPct >= 70 ? '#10b981' : valPct >= 40 ? '#f59e0b' : '#ef4444';
+                            return (
+                                <div key={key} className="breakdown-row">
+                                    <span className="breakdown-label">{label} <small>({weight})</small></span>
+                                    <div className="breakdown-bar-track">
+                                        <div className="breakdown-bar-fill" style={{ width: `${valPct}%`, backgroundColor: c }} />
+                                    </div>
+                                    <span className="breakdown-val" style={{ color: c }}>{valPct}%</span>
+                                </div>
+                            );
+                        })}
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+};
+
+
+// ============================================================================
+// PHASE 5.1: PARALLEL SIMULATION RESULTS (live streaming, per-plan cards)
+// ============================================================================
+const SCENARIO_META = {
+    conservative: { label: 'Conservative', color: '#22c55e', desc: 'LOW risk only' },
+    balanced:     { label: 'Balanced',     color: '#f59e0b', desc: 'LOW + MEDIUM risk' },
+    aggressive:   { label: 'Aggressive',   color: '#ef4444', desc: 'All actions' },
+};
+
+const ParallelSimResultsDisplay = ({
+    simData, leakageWarnings, onApplySimulatedPlan, isApplying, onDownloadRecipe, recipeAvailable
+}) => {
+    const plans        = simData?.plans || [];
+    const isRunning    = simData?.status === 'RUNNING' || simData?.status === 'INITIALIZING';
+    const baselineMetric = simData?.baseline_metric || 'Score';
+    const baseline       = simData?.baseline_score;
+
+    const donePlans = plans.filter(p => p.task_state === 'SUCCESS');
+    const bestPlan  = donePlans[0];  // Already sorted by effectiveness_score desc
+
+    return (
+        <div className="simulation-results-container">
+            <h4 style={{ margin: '0 0 4px', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <TrendIcon size={18} /> Parallel Impact Simulation
+            </h4>
+            {baseline != null && (
+                <p style={{ fontSize: '0.8em', color: '#6b7280', margin: '0 0 12px' }}>
+                    Baseline {baselineMetric}: <strong>{typeof baseline === 'number' ? baseline.toFixed(4) : 'N/A'}</strong>
+                </p>
+            )}
+
+            {/* Global leakage warnings */}
+            {leakageWarnings?.length > 0 && (
+                <div className="leakage-warning-box" style={{
+                    background: '#fee2e2', border: '1px solid #ef4444',
+                    borderRadius: 6, padding: 10, marginBottom: 12
+                }}>
+                    <div style={{ display:'flex', alignItems:'center', gap:6, color:'#b91c1c', fontWeight:'bold', fontSize:'0.85em' }}>
+                        <FiShield size={14}/> Data Leakage Detected (raw data)
+                    </div>
+                    <ul style={{ margin:'6px 0 0 12px', color:'#7f1d1d', fontSize:'0.8em' }}>
+                        {leakageWarnings.map((w, i) => <li key={i}>{w}</li>)}
+                    </ul>
+                </div>
+            )}
+
+            <p className="plans-subtitle" style={{ marginBottom: 10 }}>
+                {isRunning ? 'Workers running — results stream in as each completes...' : 'All scenarios validated. Apply the best plan.'}
+            </p>
+
+            <div className="plans-list">
+                {['conservative', 'balanced', 'aggressive'].map((scenarioKey) => {
+                    const plan = plans.find(p => p.scenario_name === scenarioKey);
+                    const meta = SCENARIO_META[scenarioKey];
+                    const isPending  = !plan || plan.task_state === 'PENDING';
+                    const isFailed   = plan?.task_state === 'FAILURE';
+                    const isSuccess  = plan?.task_state === 'SUCCESS';
+                    const isBest     = isSuccess && plan === bestPlan;
+
+                    const effScore = isSuccess ? Math.round((plan.effectiveness_score ?? 0) * 100) : null;
+                    const effColor = effScore >= 70 ? '#10b981' : effScore >= 45 ? '#f59e0b' : '#ef4444';
+
+                    return (
+                        <div key={scenarioKey}
+                             className={`plan-card ${isBest ? 'best-plan' : ''}`}
+                             style={{
+                                 borderLeft: `4px solid ${meta.color}`,
+                                 position: 'relative',
+                                 opacity: isFailed ? 0.65 : 1
+                             }}
+                        >
+                            {/* Header */}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                                <span style={{
+                                    width: 10, height: 10, borderRadius: '50%',
+                                    backgroundColor: meta.color, flexShrink: 0
+                                }} />
+                                <strong style={{ color: '#1f2937' }}>{meta.label}</strong>
+                                <small style={{ color: '#9ca3af' }}>({meta.desc})</small>
+                                {isBest && (
+                                    <span style={{
+                                        marginLeft: 'auto', background: '#dcfce7', color: '#16a34a',
+                                        borderRadius: 10, padding: '2px 8px', fontSize: '0.7em', fontWeight: 700
+                                    }}>★ Best</span>
+                                )}
+                            </div>
+
+                            {/* State-specific body */}
+                            {isPending && (
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#6b7280', fontSize:'0.85em', padding: '6px 0' }}>
+                                    <div className="small-loader" />
+                                    {simData?.status === 'INITIALIZING'
+                                        ? 'Computing ML baseline...'
+                                        : 'Validation in progress...'}
+                                </div>
+                            )}
+
+                            {isFailed && (
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#dc2626', fontSize: '0.82em' }}>
+                                    <FiAlertCircle size={14} />
+                                    {plan.error || 'Simulation failed for this scenario.'}
+                                </div>
+                            )}
+
+                            {isSuccess && (
+                                <>
+                                    {/* Effectiveness Score */}
+                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                                        <div style={{ flex: 1 }}>
+                                            <div style={{ fontSize: '0.82em', color: '#6b7280', marginBottom: 4 }}>Effectiveness Score</div>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                                <div style={{ flex: 1, height: 8, background: '#e5e7eb', borderRadius: 4, overflow: 'hidden' }}>
+                                                    <div style={{
+                                                        width: `${effScore}%`, height: '100%',
+                                                        backgroundColor: effColor, borderRadius: 4,
+                                                        transition: 'width 0.6s ease'
+                                                    }} />
+                                                </div>
+                                                <strong style={{ color: effColor, minWidth: 36 }}>{effScore}%</strong>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Sub-scores */}
+                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px 12px', fontSize: '0.75em', color: '#6b7280', marginBottom: 8 }}>
+                                        <span>Missing↓: <b style={{color:'#374151'}}>{Math.round((plan.missing_reduction_score ?? 0)*100)}%</b></span>
+                                        <span>Skew↓: <b style={{color:'#374151'}}>{Math.round((plan.skew_reduction_score ?? 0)*100)}%</b></span>
+                                        <span>ML↑: <b style={{color:'#374151'}}>{Math.round((plan.ml_improvement_score ?? 0)*100)}%</b></span>
+                                        <span>No-Leak: <b style={{color:'#374151'}}>{plan.leakage_absence_score === 1 ? '✓' : '✗'}</b></span>
+                                    </div>
+
+                                    {/* Impact string */}
+                                    {plan.impact_string && (
+                                        <p style={{ fontSize: '0.8em', color: plan.delta_percent >= 0 ? '#16a34a' : '#dc2626', margin: '0 0 10px' }}
+                                           dangerouslySetInnerHTML={{ __html: plan.impact_string }}
+                                        />
+                                    )}
+
+                                    {/* Apply button */}
+                                    <button
+                                        className={`apply-plan-btn ${isBest ? 'primary' : 'secondary'}`}
+                                        onClick={() => onApplySimulatedPlan(scenarioKey, plan.ml_improvement_score)}
+                                        disabled={isApplying}
+                                        style={{ width: '100%', marginTop: 0 }}
+                                    >
+                                        {isApplying ? <div className="small-loader"/> : <FiCheckCircle size={14}/>}
+                                        {isApplying ? 'Applying...' : `Apply ${meta.label} Plan (${plan.actions_count} actions)`}
+                                    </button>
+
+                                    {/* Per-plan leakage */}
+                                    {plan.leakage_warnings?.length > 0 && (
+                                        <div style={{ marginTop: 6, fontSize: '0.75em', color: '#dc2626', display: 'flex', alignItems: 'flex-start', gap: 4 }}>
+                                            <FiAlertCircle size={12} style={{ marginTop: 1, flexShrink: 0 }}/>
+                                            {plan.leakage_warnings.length} leakage warning{plan.leakage_warnings.length > 1 ? 's' : ''} in cleaned data
+                                        </div>
+                                    )}
+                                </>
+                            )}
+                        </div>
+                    );
+                })}
+            </div>
+
+            {/* Download Recipe */}
+            {recipeAvailable && (
+                <button
+                    className="simulation-run-btn"
+                    onClick={onDownloadRecipe}
+                    style={{ marginTop: 12, background: 'linear-gradient(135deg, #1e40af, #3b82f6)' }}
+                >
+                    <FiDownload size={16}/> Download Cleaning Recipe (.json)
+                </button>
+            )}
         </div>
     );
 };
@@ -281,20 +534,25 @@ const SimulationResultsDisplay = ({ results, warnings, onApplyPlan, isApplying, 
 const StatisticsSidebar = ({ 
     statistics, isLoading, sidebarState, setSidebarState, sidebarMode,
     diagnosticReport, isReportLoading, goal, setGoal, targetVariable, setTargetVariable,
-    arePlansLoading, treatmentPlans, onGeneratePlans, onRunSimulation, isSimulating, simulationResults,
-    simulationWarnings, onApplyPlan, isApplying
+    arePlansLoading, treatmentPlans, onGeneratePlans, onRunSimulation, isSimulating,
+    simulationResults, parallelSimResults, simulationWarnings,
+    onApplyPlan, onApplySimulatedPlan, isApplying,
+    onDownloadRecipe, recipeAvailable
 }) => {
-    const [activeTab, setActiveTab] = useState('overview');
+    const [activeTab, setActiveTab]       = useState('overview');
     const [planToPreview, setPlanToPreview] = useState(null);
 
-    if (sidebarState === 'closed') {
-        return null;
-    }
+    if (sidebarState === 'closed') return null;
 
     const renderStatistics = () => {
         if (isLoading) return <Loader />;
         if (!statistics) return (<div className="no-data-message"><FiBarChart2 size={48} /><p>No statistics available.</p></div>);
         
+        const hasEffectiveness = statistics.cleaning_effectiveness != null;
+        const eff = statistics.cleaning_effectiveness;
+        const effPct = hasEffectiveness ? Math.round(eff * 100) : null;
+        const effColor = effPct >= 75 ? '#10b981' : effPct >= 50 ? '#f59e0b' : '#ef4444';
+
         return (
             <>
                 <div className="stats-tabs">
@@ -304,15 +562,34 @@ const StatisticsSidebar = ({
                 <div className="stats-content-body">
                     {activeTab === 'overview' && (
                         <>
+                            {/* Phase 5: Show effectiveness gauge if available, else quality score */}
                             <div className="stat-group">
                                 <div className="stat-group-header"><FiShield size={16}/> Data Quality</div>
-                                <div className="quality-metric">
-                                    <span>Overall Quality</span>
-                                    <strong>{statistics.qualityScore?.toFixed(1)}%</strong>
-                                </div>
-                                <div className="progress-bar-container">
-                                    <div className="progress-bar" style={{ width: `${statistics.qualityScore}%` }}></div>
-                                </div>
+                                {hasEffectiveness ? (
+                                    <>
+                                        <div className="quality-metric">
+                                            <span>Cleaning Effectiveness</span>
+                                            <strong style={{ color: effColor }}>{effPct}%</strong>
+                                        </div>
+                                        <div className="progress-bar-container">
+                                            <div className="progress-bar" style={{ width: `${effPct}%`, background: `linear-gradient(90deg, ${effColor}, ${effColor}cc)` }}/>
+                                        </div>
+                                        <div className="quality-metric" style={{ marginTop: 4 }}>
+                                            <span style={{ color: '#9ca3af', fontSize:'0.8em' }}>Overall Quality</span>
+                                            <strong style={{ color: '#9ca3af', fontSize:'0.8em' }}>{statistics.qualityScore?.toFixed(1)}%</strong>
+                                        </div>
+                                    </>
+                                ) : (
+                                    <>
+                                        <div className="quality-metric">
+                                            <span>Overall Quality</span>
+                                            <strong>{statistics.qualityScore?.toFixed(1)}%</strong>
+                                        </div>
+                                        <div className="progress-bar-container">
+                                            <div className="progress-bar" style={{ width: `${statistics.qualityScore}%` }}/>
+                                        </div>
+                                    </>
+                                )}
                             </div>
                             <div className="stat-group">
                                 <div className="stat-group-header"><FiDatabase size={16}/> Dataset Overview</div>
@@ -376,9 +653,48 @@ const StatisticsSidebar = ({
     };
 
     const renderCoPilot = () => {
-        if (isSimulating) {
-            return <div className="stats-content-body"><Loader text="Running simulations... This may take several minutes." /></div>;
+        // Phase 5: Show parallel simulation results if available (preferred)
+        if (isSimulating && !parallelSimResults) {
+            return (
+                <div className="stats-content-body">
+                    <Loader text="Dispatching simulation workers — results appear as each completes..." />
+                </div>
+            );
         }
+
+        // Streaming parallel sim results (live update during or after simulation)
+        if (parallelSimResults) {
+            return (
+                <div className="stats-content-body">
+                    <ParallelSimResultsDisplay
+                        simData={parallelSimResults}
+                        leakageWarnings={parallelSimResults.leakage_warnings}
+                        onApplySimulatedPlan={onApplySimulatedPlan}
+                        isApplying={isApplying}
+                        onDownloadRecipe={onDownloadRecipe}
+                        recipeAvailable={recipeAvailable}
+                    />
+                    {/* Show effectiveness gauge for best completed plan */}
+                    {(() => {
+                        const bestPlan = parallelSimResults.plans?.find(p => p.task_state === 'SUCCESS');
+                        if (!bestPlan) return null;
+                        return (
+                            <EffectivenessGauge
+                                score={bestPlan.effectiveness_score}
+                                components={{
+                                    missing_reduction_score: bestPlan.missing_reduction_score,
+                                    skew_reduction_score:    bestPlan.skew_reduction_score,
+                                    ml_improvement_score:    bestPlan.ml_improvement_score,
+                                    leakage_absence_score:   bestPlan.leakage_absence_score,
+                                }}
+                            />
+                        );
+                    })()}
+                </div>
+            );
+        }
+
+        // Legacy simulation results (fallback)
         if (simulationResults) {
             return <div className="stats-content-body">
                 <SimulationResultsDisplay 
@@ -390,14 +706,22 @@ const StatisticsSidebar = ({
                 />
             </div>;
         }
+
         if (treatmentPlans) {
-            return <TreatmentPlansDisplay 
-                plans={treatmentPlans} 
-                onRunSimulation={onRunSimulation} 
+            return <ActionBacklogPanel 
+                actions={treatmentPlans.actions || []}
+                domainInference={treatmentPlans.domain_inference}
+                leakageWarnings={treatmentPlans.leakage_warnings}
+                reasoningTrace={treatmentPlans.reasoning_trace}
+                onExecuteActions={(selectedActions) => onApplyPlan(selectedActions)}
+                isExecuting={isApplying}
+                allColumns={diagnosticReport?.column_diagnostics?.map(c => c.column_name) || []}
+                datasetProfile={statistics}
+                onRunSimulation={onRunSimulation}
                 isSimulating={isSimulating}
-                onViewCode={setPlanToPreview}
             />;
         }
+
         return (
             <IntelligentValidationEngine 
                 diagnosticReport={diagnosticReport}

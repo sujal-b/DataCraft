@@ -138,3 +138,57 @@
   border-color: #818CF8;
   color: #4338CA;
 }
+
+/* Last Report button */
+.last-report-button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 14px;
+  border: 1px solid #A7F3D0;
+  background-color: #F0FDF4;
+  color: #047857;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease-in-out;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+  position: relative;
+}
+
+.last-report-button:hover:not(:disabled) {
+  background-color: #D1FAE5;
+  border-color: #6EE7B7;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px -2px rgba(16, 185, 129, 0.25);
+}
+
+.last-report-button:disabled,
+.last-report-button.disabled {
+  background-color: #F8FAFC;
+  border-color: #E2E8F0;
+  color: #94A3B8;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+  opacity: 0.75;
+}
+
+/* Pulsing green dot */
+.report-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #10B981;
+  display: inline-block;
+  animation: report-pulse 2s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+@keyframes report-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.75); }
+}
+
